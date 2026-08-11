@@ -34,7 +34,7 @@ def test_base_and_session_factory_exist():
     assert len(base_classes) == 1
     assert base_classes[0] is database_module.Base
     assert database_module.Base.metadata is not None
-    assert len(database_module.Base.metadata.tables) == 0
+    assert len(database_module.Base.metadata.tables) == 7
 
     session_factory_values = [
         value
