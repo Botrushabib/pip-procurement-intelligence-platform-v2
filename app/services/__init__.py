@@ -36,6 +36,13 @@ from .mapping_engine import (
 	MappingStatus,
 	map_transaction,
 )
+from .persistence_engine import (
+	DUPLICATE_STRATEGY,
+	PersistenceEngine,
+	PersistenceError,
+	PersistenceResult,
+	persist_mapped_transaction,
+)
 
 __all__ = [
 	"DEFAULT_WORKSHEET_NAME",
@@ -70,4 +77,9 @@ __all__ = [
 	"MappingEngine",
 	"MappingStatus",
 	"map_transaction",
+	"DUPLICATE_STRATEGY",
+	"PersistenceEngine",
+	"PersistenceError",
+	"PersistenceResult",
+	"persist_mapped_transaction",
 ]
