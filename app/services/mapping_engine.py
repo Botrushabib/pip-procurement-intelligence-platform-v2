@@ -44,6 +44,7 @@ class FieldMapping:
 @dataclass(frozen=True)
 class DestinationMapping:
     status: MappingStatus
+    destination_type: str | None = None
     branch_id: int | None = None
     warehouse_id: int | None = None
     sub_warehouse_name: str | None = None
@@ -78,6 +79,22 @@ class MappedPurchaseTransaction:
     @property
     def source_row(self) -> int:
         return self.raw_record.source_row
+
+    @property
+    def destination_type(self) -> str | None:
+        return self.destination.destination_type
+
+    @property
+    def branch_id(self) -> int | None:
+        return self.destination.branch_id
+
+    @property
+    def warehouse_id(self) -> int | None:
+        return self.destination.warehouse_id
+
+    @property
+    def sub_warehouse_name(self) -> str | None:
+        return self.destination.sub_warehouse_name
 
 
 def _normalize(value: Any) -> str:
@@ -137,18 +154,34 @@ def _destination_mapping(
         ):
             valid_matches.append(candidate)
 
+    matched_types = {
+        candidate.destination_type
+        for candidate in matches
+        if candidate.destination_type in {BRANCH, WAREHOUSE, SUB_WAREHOUSE}
+    }
+    destination_type = next(iter(matched_types)) if len(matched_types) == 1 else None
+
     if len(valid_matches) != 1:
         status = MappingStatus.AMBIGUOUS if len(valid_matches) > 1 else MappingStatus.UNMAPPED
-        return DestinationMapping(status)
+        return DestinationMapping(status, destination_type=destination_type)
 
     candidate = valid_matches[0]
     if candidate.destination_type == BRANCH:
-        return DestinationMapping(MappingStatus.MAPPED, branch_id=candidate.branch_id)
+        return DestinationMapping(
+            MappingStatus.MAPPED,
+            destination_type=BRANCH,
+            branch_id=candidate.branch_id,
+        )
     if candidate.destination_type == WAREHOUSE:
-        return DestinationMapping(MappingStatus.MAPPED, warehouse_id=candidate.warehouse_id)
+        return DestinationMapping(
+            MappingStatus.MAPPED,
+            destination_type=WAREHOUSE,
+            warehouse_id=candidate.warehouse_id,
+        )
     if candidate.destination_type == SUB_WAREHOUSE:
         return DestinationMapping(
             MappingStatus.MAPPED,
+            destination_type=SUB_WAREHOUSE,
             warehouse_id=candidate.warehouse_id,
             sub_warehouse_name=candidate.sub_warehouse_name,
         )

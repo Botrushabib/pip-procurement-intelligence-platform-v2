@@ -116,16 +116,22 @@ def test_branch_destination_exposes_branch_id():
     )
 
     assert result.destination.status is MappingStatus.MAPPED
+    assert result.destination.destination_type == BRANCH
+    assert result.destination_type == BRANCH
     assert result.destination.branch_id == 6
     assert result.destination.warehouse_id is None
+    assert result.destination.sub_warehouse_name is None
 
 
 def test_warehouse_destination_exposes_warehouse_id():
     result = map_valid()
 
     assert result.destination.status is MappingStatus.MAPPED
+    assert result.destination.destination_type == WAREHOUSE
+    assert result.destination_type == WAREHOUSE
     assert result.destination.warehouse_id == 4
     assert result.destination.branch_id is None
+    assert result.destination.sub_warehouse_name is None
 
 
 def test_subwarehouse_destination_exposes_both_typed_values():
@@ -141,7 +147,10 @@ def test_subwarehouse_destination_exposes_both_typed_values():
     )
 
     assert result.destination.status is MappingStatus.MAPPED
+    assert result.destination.destination_type == SUB_WAREHOUSE
+    assert result.destination_type == SUB_WAREHOUSE
     assert result.destination.warehouse_id == 4
+    assert result.destination.branch_id is None
     assert result.destination.sub_warehouse_name == "Cold Storage"
     assert not hasattr(result.destination, "destination_id")
 
@@ -153,6 +162,52 @@ def test_invalid_subwarehouse_candidates_are_unmapped_without_inference():
     ]:
         result = map_valid(destinations=[candidate])
         assert result.destination.status is MappingStatus.UNMAPPED
+
+
+def test_unmapped_destination_preserves_explicit_candidate_type():
+    result = map_valid(
+        destinations=[destination(BRANCH, branch_id=None, warehouse_id=None)]
+    )
+
+    assert result.destination.status is MappingStatus.UNMAPPED
+    assert result.destination.destination_type == BRANCH
+
+
+def test_ambiguous_destination_preserves_only_unambiguous_type():
+    same_type = map_valid(
+        destinations=[destination(), destination(WAREHOUSE, warehouse_id=9)]
+    )
+    mixed_types = map_valid(
+        destinations=[
+            destination(),
+            destination(BRANCH, destination_name="Warehouse A", branch_id=8, warehouse_id=None),
+        ]
+    )
+
+    assert same_type.destination.status is MappingStatus.AMBIGUOUS
+    assert same_type.destination.destination_type == WAREHOUSE
+    assert mixed_types.destination.status is MappingStatus.AMBIGUOUS
+    assert mixed_types.destination.destination_type is None
+
+
+def test_destination_type_is_never_inferred_from_ids():
+    result = map_valid(
+        destinations=[
+            DestinationCandidate(
+                destination_name="Warehouse A",
+                destination_type="UNKNOWN",
+                branch_id=6,
+                warehouse_id=4,
+                sub_warehouse_name="Cold Storage",
+            )
+        ]
+    )
+
+    assert result.destination.status is MappingStatus.UNMAPPED
+    assert result.destination.destination_type is None
+    assert result.destination.branch_id is None
+    assert result.destination.warehouse_id is None
+    assert result.destination.sub_warehouse_name is None
 
 
 def test_destination_type_and_ambiguity_are_preserved():
@@ -191,6 +246,7 @@ def test_raw_values_and_traceability_are_preserved():
     assert result.raw_record.product_raw == " Product A "
     assert result.raw_record.destination_raw == " Warehouse A "
     assert result.raw_record.unit_raw == " Each "
+    assert result.destination_type == WAREHOUSE
 
 
 def test_inputs_are_not_mutated_and_results_are_deterministic():
@@ -204,6 +260,7 @@ def test_inputs_are_not_mutated_and_results_are_deterministic():
     assert products == [MappingCandidate("Product A", 2)]
     assert units == [MappingCandidate("Each", 3)]
     assert destinations == [destination()]
+    assert result_one.destination_type == result_two.destination_type == WAREHOUSE
 
 
 def test_mapping_module_has_no_database_dependency():
