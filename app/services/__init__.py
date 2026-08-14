@@ -43,6 +43,21 @@ from .persistence_engine import (
 	PersistenceResult,
 	persist_mapped_transaction,
 )
+from .odoo_import_engine import (
+	BusinessFingerprint,
+	DuplicateClassification,
+	DuplicateInfo,
+	ExistingTransaction,
+	ImportCommitResult,
+	ImportError,
+	ImportPreview,
+	ImportRowResult,
+	ImportRowStatus,
+	OdooImportEngine,
+	SourceIdentity,
+	business_fingerprint,
+	business_fingerprint_from_transaction,
+)
 
 __all__ = [
 	"DEFAULT_WORKSHEET_NAME",
@@ -82,4 +97,17 @@ __all__ = [
 	"PersistenceError",
 	"PersistenceResult",
 	"persist_mapped_transaction",
+	"BusinessFingerprint",
+	"DuplicateClassification",
+	"DuplicateInfo",
+	"ExistingTransaction",
+	"ImportCommitResult",
+	"ImportError",
+	"ImportPreview",
+	"ImportRowResult",
+	"ImportRowStatus",
+	"OdooImportEngine",
+	"SourceIdentity",
+	"business_fingerprint",
+	"business_fingerprint_from_transaction",
 ]
