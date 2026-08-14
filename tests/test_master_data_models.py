@@ -50,8 +50,8 @@ def test_metadata_registers_exactly_seven_application_tables():
         "products",
     }
 
-    assert set(Base.metadata.tables.keys()) == expected_tables
-    assert len(Base.metadata.tables) == 7
+    assert set(Base.metadata.tables.keys()) == expected_tables | {"purchase_transactions"}
+    assert len(Base.metadata.tables) == 8
 
 
 def test_primary_keys_and_required_foreign_keys_exist():
@@ -128,8 +128,8 @@ def test_product_does_not_have_supplier_or_price_fields():
     assert "purchase_price" not in product_table.columns
 
 
-def test_no_transaction_or_import_models_exist():
-    assert "Transaction" not in dir(app.models)
+def test_purchase_transaction_model_is_registered():
+    assert "PurchaseTransaction" in dir(app.models)
     assert "Import" not in dir(app.models)
 
 
