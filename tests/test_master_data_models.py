@@ -50,8 +50,12 @@ def test_metadata_registers_exactly_seven_application_tables():
         "products",
     }
 
-    assert set(Base.metadata.tables.keys()) == expected_tables | {"purchase_transactions"}
-    assert len(Base.metadata.tables) == 8
+    assert set(Base.metadata.tables.keys()) == expected_tables | {
+        "purchase_transactions",
+        "purchase_requests",
+        "purchase_request_lines",
+    }
+    assert len(Base.metadata.tables) == 10
 
 
 def test_primary_keys_and_required_foreign_keys_exist():

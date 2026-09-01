@@ -2,6 +2,8 @@ from .branch import Branch
 from .category import Category
 from .company import Company
 from .product import Product
+from .purchase_request import PurchaseRequest, PurchaseRequestStatus
+from .purchase_request_line import PurchaseRequestLine
 from .purchase_transaction import PurchaseTransaction
 from .supplier import Supplier
 from .unit import Unit
@@ -12,6 +14,9 @@ __all__ = [
     "Category",
     "Company",
     "Product",
+    "PurchaseRequest",
+    "PurchaseRequestLine",
+    "PurchaseRequestStatus",
     "PurchaseTransaction",
     "Supplier",
     "Unit",
