@@ -54,8 +54,10 @@ def test_metadata_registers_exactly_seven_application_tables():
         "purchase_transactions",
         "purchase_requests",
         "purchase_request_lines",
+        "receiving_events",
+        "receiving_event_lines",
     }
-    assert len(Base.metadata.tables) == 10
+    assert len(Base.metadata.tables) == 12
 
 
 def test_primary_keys_and_required_foreign_keys_exist():
