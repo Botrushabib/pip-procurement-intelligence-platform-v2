@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import date
+from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
+from pydantic import BaseModel
 
 from app.services.receiving_category_intelligence import (
     ReceivingCategoryIntelligence,
@@ -40,6 +42,27 @@ from app.services.receiving_trend_intelligence import (
 
 
 router = APIRouter(prefix="/api/receiving", tags=["receiving analytics"])
+
+
+class ReceivingAnalyticsSummaryResponse(BaseModel):
+    examined_lines: int
+    eligible_lines: int
+    distinct_event_count: int
+    total_quantity: float
+    total_spend: float
+    average_unit_price: float | None
+    minimum_unit_price: float | None
+    maximum_unit_price: float | None
+
+
+class ReceivingAnalyticsResponse(BaseModel):
+    summary: ReceivingAnalyticsSummaryResponse
+    history: dict[str, Any]
+    price: dict[str, Any] | None
+    supplier: dict[str, Any] | None
+    category: dict[str, Any] | None
+    trend: dict[str, Any]
+    supplier_comparison: dict[str, Any]
 
 
 def get_receiving_event_query_service() -> ReceivingEventQueryService:
@@ -84,14 +107,14 @@ def _matches_request(
     return True
 
 
-@router.get("/analytics")
+@router.get("/analytics", response_model=ReceivingAnalyticsResponse)
 def get_receiving_analytics(
-    company_id: int | None = None,
-    warehouse_id: int | None = None,
-    supplier_id: int | None = None,
-    product_id: int | None = None,
-    category_id: int | None = None,
-    unit_id: int | None = None,
+    company_id: int | None = Query(default=None, ge=1),
+    warehouse_id: int | None = Query(default=None, ge=1),
+    supplier_id: int | None = Query(default=None, ge=1),
+    product_id: int | None = Query(default=None, ge=1),
+    category_id: int | None = Query(default=None, ge=1),
+    unit_id: int | None = Query(default=None, ge=1),
     date_from: date | None = None,
     date_to: date | None = None,
     reference: str | None = None,
@@ -101,7 +124,18 @@ def get_receiving_analytics(
     preparation: ReceivingEventAnalyticsPreparation = Depends(
         get_receiving_event_analytics_preparation
     ),
-) -> dict[str, object]:
+) -> ReceivingAnalyticsResponse:
+    if date_from is not None and date_to is not None and date_from > date_to:
+        raise HTTPException(
+            status_code=422,
+            detail="date_from must be on or before date_to.",
+        )
+    if reference is not None and not reference.strip():
+        raise HTTPException(
+            status_code=422,
+            detail="reference must contain a non-whitespace character.",
+        )
+
     request = ReceivingTrendRequest(
         company_id=company_id,
         warehouse_id=warehouse_id,
@@ -217,8 +251,8 @@ def get_receiving_analytics(
             records,
         )
 
-    return {
-        "summary": jsonable_encoder(
+    return ReceivingAnalyticsResponse(
+        summary=jsonable_encoder(
             {
                 "examined_lines": history_result.examined_count,
                 "eligible_lines": history_result.line_count,
@@ -230,7 +264,7 @@ def get_receiving_analytics(
                 "maximum_unit_price": history_result.maximum_unit_price,
             }
         ),
-        "history": jsonable_encoder(
+        history=jsonable_encoder(
             {
                 "last_receiving": history_result.last_receiving,
                 "receiving_frequency": history_result.receiving_frequency,
@@ -238,9 +272,9 @@ def get_receiving_analytics(
                 "data_quality": history_result.data_quality,
             }
         ),
-        "price": jsonable_encoder(price_result),
-        "supplier": jsonable_encoder(supplier_result),
-        "category": jsonable_encoder(category_result),
-        "trend": jsonable_encoder(trend_result),
-        "supplier_comparison": jsonable_encoder(supplier_comparison),
-    }
+        price=jsonable_encoder(price_result),
+        supplier=jsonable_encoder(supplier_result),
+        category=jsonable_encoder(category_result),
+        trend=jsonable_encoder(trend_result),
+        supplier_comparison=jsonable_encoder(supplier_comparison),
+    )

@@ -105,6 +105,18 @@ def api_services():
 
 def test_analytics_endpoint_is_registered_and_read_only():
     assert "get" in app.openapi()["paths"]["/api/receiving/analytics"]
+    response_schema = app.openapi()["components"]["schemas"][
+        "ReceivingAnalyticsResponse"
+    ]["properties"]
+    assert set(response_schema) == {
+        "summary",
+        "history",
+        "price",
+        "supplier",
+        "category",
+        "trend",
+        "supplier_comparison",
+    }
     response = TestClient(app).post("/api/receiving/analytics")
     assert response.status_code == 405
 
@@ -183,11 +195,61 @@ def test_empty_analytics_response_contains_no_data_results(api_services):
     assert body["summary"]["examined_lines"] == 0
     assert body["summary"]["eligible_lines"] == 0
     assert body["history"]["monthly_totals"] == []
+    assert body["history"]["last_receiving"] is None
     assert body["price"] is None
     assert body["supplier"] is None
     assert body["category"] is None
     assert body["trend"]["observations"] == []
+    assert body["trend"]["monthly_trends"] == []
+    assert body["trend"]["product_monthly_trends"] == []
+    assert body["trend"]["supplier_monthly_trends"] == []
+    assert body["trend"]["category_monthly_trends"] == []
+    assert body["trend"]["quality"]["examined_lines"] == 0
     assert body["supplier_comparison"]["observations"] == []
+    assert body["supplier_comparison"]["supplier_summaries"] == []
+    assert body["supplier_comparison"]["supplier_product_comparisons"] == []
+    assert body["supplier_comparison"]["product_price_comparisons"] == []
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"company_id": "0"},
+        {"product_id": "-1"},
+        {"date_from": "not-a-date"},
+        {"date_from": "2026-02-01", "date_to": "2026-01-01"},
+        {"reference": "   "},
+    ],
+)
+def test_invalid_filters_return_safe_validation_errors(api_services, params):
+    response = TestClient(app).get("/api/receiving/analytics", params=params)
+
+    assert response.status_code == 422
+    assert "detail" in response.json()
+    assert "ReceivingEventQueryService" not in response.text
+    assert "Traceback" not in response.text
+
+
+def test_no_matching_records_keep_the_response_contract(api_services):
+    response = TestClient(app).get(
+        "/api/receiving/analytics", params={"product_id": 999}
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert set(body) == {
+        "summary",
+        "history",
+        "price",
+        "supplier",
+        "category",
+        "trend",
+        "supplier_comparison",
+    }
+    assert body["summary"]["eligible_lines"] == 0
+    assert body["price"]["observations"] == []
+    assert body["price"]["observation_count"] == 0
+    assert body["trend"]["observations"] == []
 
 
 def test_api_adds_no_database_models_or_tables():
