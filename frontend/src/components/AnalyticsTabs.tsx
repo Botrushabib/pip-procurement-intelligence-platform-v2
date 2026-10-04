@@ -13,9 +13,12 @@ export type AnalyticsTabId = (typeof ANALYTICS_TABS)[number]["id"];
 export function AnalyticsTabs({
   activeTab,
   onSelect,
+  emptySections = [],
 }: {
   activeTab: AnalyticsTabId;
   onSelect: (tab: AnalyticsTabId) => void;
+  /** Tabs whose current response section is null (no data for the applied filters). */
+  emptySections?: readonly AnalyticsTabId[];
 }) {
   return (
     <div className="tabs-scroll">
@@ -29,7 +32,12 @@ export function AnalyticsTabs({
             onClick={() => onSelect(tab.id)}
             role="tab"
             type="button"
-          >{tab.label}</button>
+          >
+            {tab.label}
+            {emptySections.includes(tab.id) && (
+              <span className="tab-empty-indicator" aria-hidden="true" title="No data for the current filters" />
+            )}
+          </button>
         ))}
       </div>
     </div>
