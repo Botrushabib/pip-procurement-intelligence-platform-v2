@@ -23,6 +23,23 @@ const EMPTY_FILTERS: FilterValues = {
   category_id: "", unit_id: "", date_from: "", date_to: "", reference: "",
 };
 
+// Short labels for the applied-filter context line only; no new filter data or validation.
+const FILTER_LABELS: Record<FilterName, string> = {
+  company_id: "Company", warehouse_id: "Warehouse", supplier_id: "Supplier",
+  product_id: "Product", category_id: "Category", unit_id: "Unit",
+  date_from: "From", date_to: "To", reference: "Reference",
+};
+
+function describeAppliedFilters(values: FilterValues): string {
+  const active = (Object.keys(FILTER_LABELS) as FilterName[])
+    .filter((name) => values[name].trim() !== "")
+    .map((name) => `${FILTER_LABELS[name]}: ${values[name].trim()}`);
+  return active.length === 0 ? "All records" : active.join(" · ");
+}
+
+// Sections that may be null in the existing API response; used only to flag empty tabs.
+const NULLABLE_SECTIONS = ["price", "supplier", "category"] as const;
+
 type LoadState =
   | { status: "loading" }
   | { status: "ready"; data: ReceivingAnalyticsResponse }
@@ -114,7 +131,11 @@ export function ReceivingAnalyticsPage() {
 
       <div className="content-shell" id="main-content">
         <div className="page-heading">
-          <div><p className="breadcrumb">Receiving <span>/</span> Intelligence</p><h1>Receiving Analytics</h1></div>
+          <div>
+            <p className="breadcrumb">Receiving <span>/</span> Intelligence</p>
+            <h1>Receiving Analytics</h1>
+            <p className="applied-filters">{describeAppliedFilters(filters)}</p>
+          </div>
           <div className="read-only-label">READ ONLY</div>
         </div>
 
@@ -146,7 +167,11 @@ export function ReceivingAnalyticsPage() {
               <strong>No analytics-eligible lines</strong><span>Records were found, but none are eligible for analytics.</span>
             </div>
           ) : null}
-          <AnalyticsTabs activeTab={activeTab} onSelect={setActiveTab} />
+          <AnalyticsTabs
+            activeTab={activeTab}
+            onSelect={setActiveTab}
+            emptySections={NULLABLE_SECTIONS.filter((section) => loadState.data[section] === null)}
+          />
           <div role="tabpanel" aria-labelledby={`tab-${activeTab}`}>
             <AnalyticsSection activeTab={activeTab} data={loadState.data} />
           </div>

@@ -311,6 +311,45 @@ describe("Receiving Analytics frontend", () => {
     expect(screen.getByRole("tab", { name: "Category" }).querySelector(".tab-empty-indicator")).toBeNull();
   });
 
+  it("wires empty-section tab indicators into the live page when price/supplier/category are null", async () => {
+    const body = emptyResponse();
+    body.summary = { ...body.summary, examined_lines: 1, eligible_lines: 1 };
+    // price, supplier, and category are already null from emptyResponse(); trend is not.
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse(body)));
+    render(<App />);
+    await screen.findByRole("tabpanel");
+    expect(screen.getByRole("tab", { name: "Price" }).querySelector(".tab-empty-indicator")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Supplier" }).querySelector(".tab-empty-indicator")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Category" }).querySelector(".tab-empty-indicator")).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Trend" }).querySelector(".tab-empty-indicator")).toBeNull();
+  });
+
+  it("shows no empty-section indicator on the live page when a section is populated", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse(populatedResponse())));
+    render(<App />);
+    await screen.findByRole("tabpanel");
+    expect(screen.getByRole("tab", { name: "Price" }).querySelector(".tab-empty-indicator")).toBeNull();
+    expect(screen.getByRole("tab", { name: "Supplier" }).querySelector(".tab-empty-indicator")).toBeNull();
+    expect(screen.getByRole("tab", { name: "Category" }).querySelector(".tab-empty-indicator")).toBeNull();
+  });
+
+  it("shows 'All records' in the applied-filter context when no filters are active", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse(emptyResponse())));
+    render(<App />);
+    expect(await screen.findByText("All records")).toBeTruthy();
+  });
+
+  it("reflects active filters in the applied-filter context", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockResponse(emptyResponse()));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    await screen.findByText("All records");
+    fireEvent.change(screen.getByLabelText("Company ID"), { target: { value: "12" } });
+    fireEvent.change(screen.getByLabelText("Receiving reference"), { target: { value: "REC-2" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply filters" }));
+    expect(await screen.findByText("Company: 12 · Reference: REC-2")).toBeTruthy();
+  });
+
   it("shows a safe API error without exposing backend details", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(mockResponse({ detail: "traceback secret" }, 500)));
     render(<App />);
