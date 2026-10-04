@@ -1,5 +1,12 @@
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from io import BytesIO
+import os
+from pathlib import Path
+import subprocess
+import sys
+from threading import Lock
+from time import sleep
 
 import pytest
 from fastapi.testclient import TestClient
@@ -31,7 +38,10 @@ from app.services.receiving_event_mapping_result import (
     UnitCandidate,
     WarehouseCandidate,
 )
-from app.services.receiving_event_persistence_engine import ReceivingEventPersistenceEngine
+from app.services.receiving_event_persistence_engine import (
+    ReceivingEventPersistenceEngine,
+    ReceivingPersistenceResult,
+)
 from app.services.receiving_event_query_service import ReceivingEventQueryService
 from tests.test_receiving_event_mapping_engine import make_row, mapped
 
@@ -307,3 +317,296 @@ def test_committed_receiving_data_is_visible_through_analytics_api(database_fixt
     body = response.json()
     assert body["summary"]["distinct_event_count"] >= 1
     assert body["summary"]["eligible_lines"] >= 1
+
+
+def test_unknown_company_code_is_rejected_without_creating_preview():
+    install_fake_dependencies()
+    client = TestClient(app)
+
+    response = preview(client, company_code="UNKNOWN_COMPANY")
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Unknown company_code"
+    assert preview_store._items == {}
+
+
+def test_oversized_workbook_is_rejected(monkeypatch):
+    install_fake_dependencies()
+    monkeypatch.setattr(
+        "app.api.receiving_import_api.MAX_RECEIVING_WORKBOOK_SIZE_BYTES", 32
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/receiving/import/preview",
+        files={"file": ("large.xlsx", b"x" * 33, "application/octet-stream")},
+        data={"company_code": COMPANY_CODE},
+    )
+
+    assert response.status_code == 413
+    assert "maximum upload size" in response.json()["detail"]
+    assert preview_store._items == {}
+
+
+def test_unknown_and_expired_preview_tokens_are_rejected():
+    client = TestClient(app)
+
+    unknown_response = client.post(
+        "/api/receiving/import/commit", json={"preview_token": "not-a-token"}
+    )
+
+    stored = ReceivingImportPreview(
+        source_file="expired.xlsx",
+        source_sheet="Report",
+        header_row=1,
+        total_rows=1,
+        mapping_result=mapped(make_row()),
+    )
+    expired_token = preview_store.create(stored)
+    preview_store._items[expired_token] = (0, stored)
+    expired_response = client.post(
+        "/api/receiving/import/commit",
+        json={"preview_token": expired_token},
+    )
+
+    assert unknown_response.status_code == 404
+    assert expired_response.status_code == 404
+
+
+@pytest.mark.parametrize(
+    ("filename", "content", "worksheet_name", "expected_detail"),
+    [
+        ("broken.xlsx", b"not an xlsx workbook", None, "Invalid XLSX workbook"),
+        ("valid.xlsx", workbook_bytes(), "Missing Sheet", "Worksheet not found"),
+    ],
+)
+def test_malformed_workbook_and_unknown_worksheet_are_rejected(
+    filename, content, worksheet_name, expected_detail
+):
+    install_fake_dependencies()
+    form_data = {"company_code": COMPANY_CODE}
+    if worksheet_name is not None:
+        form_data["worksheet_name"] = worksheet_name
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/receiving/import/preview",
+        files={
+            "file": (
+                filename,
+                content,
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
+        },
+        data=form_data,
+    )
+
+    assert response.status_code == 400
+    assert expected_detail in response.json()["detail"]
+    assert preview_store._items == {}
+
+
+def test_invalid_mapping_cannot_persist():
+    candidates = fake_matching_candidates()
+    candidates["products"] = []
+    app.dependency_overrides[get_receiving_candidates] = lambda: candidates
+    client = TestClient(app)
+    preview_response = preview(client)
+    assert preview_response.status_code == 200
+    token = preview_response.json()["preview_token"]
+    assert any(
+        "PRODUCT_UNMAPPED" in decision["reason_codes"]
+        for decision in preview_response.json()["decisions"]
+    )
+
+    response = client.post(
+        "/api/receiving/import/commit", json={"preview_token": token}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["persisted"] is False
+    assert response.json()["error"] == "GATE_BLOCKED"
+    assert response.json()["persisted_event_count"] == 0
+    assert preview_store.get(token) is not None
+
+
+def test_failed_persistence_result_is_returned_and_token_is_retained():
+    install_fake_dependencies()
+
+    class FailedPersistenceEngine:
+        def __init__(self):
+            self.calls = 0
+
+        def persist(self, decisions, *, confirmed):
+            self.calls += 1
+            gate = ReceivingEventPersistenceEngine().gate(decisions)
+            return ReceivingPersistenceResult(
+                persisted=False,
+                persisted_event_count=0,
+                persisted_line_count=0,
+                duplicate_source_rows=(),
+                gate=gate,
+                error="DATABASE_UNAVAILABLE",
+            )
+
+    persistence_engine = FailedPersistenceEngine()
+    app.dependency_overrides[get_receiving_persistence_engine] = (
+        lambda: persistence_engine
+    )
+    client = TestClient(app)
+    token = preview(client).json()["preview_token"]
+
+    response = client.post(
+        "/api/receiving/import/commit", json={"preview_token": token}
+    )
+    retry_response = client.post(
+        "/api/receiving/import/commit", json={"preview_token": token}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["persisted"] is False
+    assert response.json()["error"] == "DATABASE_UNAVAILABLE"
+    assert retry_response.status_code == 200
+    assert persistence_engine.calls == 2
+    assert preview_store.get(token) is not None
+
+
+def test_concurrent_same_source_commits_are_serialized():
+    install_fake_dependencies()
+
+    class DuplicateAwarePersistenceEngine:
+        def __init__(self):
+            self.state_lock = Lock()
+            self.persisted_identities = set()
+            self.active_calls = 0
+            self.max_active_calls = 0
+
+        def persist(self, decisions, *, confirmed):
+            gate = ReceivingEventPersistenceEngine().gate(decisions)
+            ready = gate.ready_decisions[0]
+            identity = (ready.source_file, ready.source_sheet, ready.source_row)
+            with self.state_lock:
+                self.active_calls += 1
+                self.max_active_calls = max(self.max_active_calls, self.active_calls)
+            try:
+                sleep(0.05)
+                with self.state_lock:
+                    is_duplicate = identity in self.persisted_identities
+                    self.persisted_identities.add(identity)
+                if is_duplicate:
+                    return ReceivingPersistenceResult(
+                        persisted=False,
+                        persisted_event_count=0,
+                        persisted_line_count=0,
+                        duplicate_source_rows=(identity,),
+                        gate=gate,
+                        error="EXACT_SOURCE_DUPLICATE",
+                    )
+                return ReceivingPersistenceResult(
+                    persisted=True,
+                    persisted_event_count=1,
+                    persisted_line_count=gate.eligible_ready_count,
+                    duplicate_source_rows=(),
+                    gate=gate,
+                )
+            finally:
+                with self.state_lock:
+                    self.active_calls -= 1
+
+    persistence_engine = DuplicateAwarePersistenceEngine()
+    app.dependency_overrides[get_receiving_persistence_engine] = (
+        lambda: persistence_engine
+    )
+    client = TestClient(app)
+    first_preview = preview(client)
+    second_preview = preview(client)
+    assert first_preview.status_code == second_preview.status_code == 200
+    tokens = [
+        first_preview.json()["preview_token"],
+        second_preview.json()["preview_token"],
+    ]
+
+    def commit(token):
+        with TestClient(app) as concurrent_client:
+            return concurrent_client.post(
+                "/api/receiving/import/commit", json={"preview_token": token}
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(commit, tokens))
+
+    assert all(response.status_code == 200 for response in responses)
+    results = [response.json() for response in responses]
+    assert sum(result["persisted"] for result in results) == 1
+    assert sum(result["error"] == "EXACT_SOURCE_DUPLICATE" for result in results) == 1
+    assert persistence_engine.max_active_calls == 1
+
+
+def test_concurrent_same_source_commits_persist_only_once(database_fixture):
+    session_factory, _ = database_fixture
+    reset_receiving_rows(session_factory)
+    install_real_dependencies(session_factory)
+    client = TestClient(app)
+    first_preview = preview(client)
+    second_preview = preview(client)
+    assert first_preview.status_code == second_preview.status_code == 200
+    tokens = [
+        first_preview.json()["preview_token"],
+        second_preview.json()["preview_token"],
+    ]
+
+    def commit(token):
+        with TestClient(app) as concurrent_client:
+            return concurrent_client.post(
+                "/api/receiving/import/commit", json={"preview_token": token}
+            )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        responses = list(executor.map(commit, tokens))
+
+    assert all(response.status_code == 200 for response in responses)
+    results = [response.json() for response in responses]
+    assert sum(result["persisted"] for result in results) == 1
+    assert sum(result["error"] == "EXACT_SOURCE_DUPLICATE" for result in results) == 1
+    events = session_factory().scalars(
+        select(ReceivingEvent).where(ReceivingEvent.source_file == "receiving.xlsx")
+    ).all()
+    assert len(events) == 1
+
+
+@pytest.mark.parametrize(
+    ("database_url", "expected"),
+    [
+        (
+            "postgresql://test:unused@configured-db:5433/pip_test",
+            "postgresql|configured-db|5433|pip_test",
+        ),
+        (None, "postgresql|db|5432|pip_db"),
+    ],
+)
+def test_database_url_uses_environment_or_development_fallback(
+    database_url, expected
+):
+    environment = os.environ.copy()
+    if database_url is None:
+        environment.pop("DATABASE_URL", None)
+    else:
+        environment["DATABASE_URL"] = database_url
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from app.core.database import engine; "
+                "print(f'{engine.url.get_backend_name()}|{engine.url.host}|"
+                "{engine.url.port}|{engine.url.database}')"
+            ),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        env=environment,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == expected

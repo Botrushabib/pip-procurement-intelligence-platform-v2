@@ -48,6 +48,10 @@ from app.services.receiving_event_validation_engine import ReceivingValidationEn
 
 router = APIRouter(prefix="/api/receiving/import", tags=["receiving-import"])
 
+# Maximum uploaded workbook size: 25 MiB, enforced while streaming to disk.
+MAX_RECEIVING_WORKBOOK_SIZE_BYTES = 25 * 1024 * 1024
+_commit_lock = Lock()
+
 
 class SourceIdentityDTO(BaseModel):
     source_file: str
@@ -196,6 +200,15 @@ def _rename_source_file(sheet_result: ReceivingSheetResult, original_filename: s
     return replace(sheet_result, source_file=original_filename, rows=rows)
 
 
+def _company_code_matches(company_code: str, candidates: list[Any]) -> bool:
+    normalized_code = " ".join(company_code.strip().split()).lower()
+    return any(
+        candidate.code is not None
+        and " ".join(candidate.code.strip().split()).lower() == normalized_code
+        for candidate in candidates
+    )
+
+
 def _identity_dto(decision: ReceivingEventMappingDecision) -> SourceIdentityDTO:
     return SourceIdentityDTO(
         source_file=decision.source_file,
@@ -267,12 +280,24 @@ async def preview_receiving_import(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Only .xlsx files are supported")
     if not company_code.strip():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="company_code is required")
+    if not _company_code_matches(company_code, candidates["companies"]):
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail="Unknown company_code")
 
     temporary_path: str | None = None
     try:
         with NamedTemporaryFile(suffix=".xlsx", delete=False) as temporary_file:
             temporary_path = temporary_file.name
+            uploaded_size = 0
             while chunk := await file.read(1024 * 1024):
+                uploaded_size += len(chunk)
+                if uploaded_size > MAX_RECEIVING_WORKBOOK_SIZE_BYTES:
+                    raise HTTPException(
+                        status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                        detail=(
+                            "Workbook exceeds the maximum upload size of "
+                            f"{MAX_RECEIVING_WORKBOOK_SIZE_BYTES // (1024 * 1024)} MiB"
+                        ),
+                    )
                 temporary_file.write(chunk)
 
         try:
@@ -313,11 +338,14 @@ def commit_receiving_import(
     request: CommitRequest,
     persistence_engine: ReceivingEventPersistenceEngine = Depends(get_receiving_persistence_engine),
 ) -> CommitResponse:
-    preview = preview_store.get(request.preview_token)
-    if preview is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown or expired preview token")
+    # The in-memory preview store is single-process; serialize the entire commit
+    # lifecycle for the supported single-worker MVP deployment.
+    with _commit_lock:
+        preview = preview_store.get(request.preview_token)
+        if preview is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown or expired preview token")
 
-    result = persistence_engine.persist(preview.mapping_result.decisions, confirmed=True)
-    if result.persisted:
-        preview_store.remove(request.preview_token)
+        result = persistence_engine.persist(preview.mapping_result.decisions, confirmed=True)
+        if result.persisted:
+            preview_store.remove(request.preview_token)
     return _commit_response(result)
